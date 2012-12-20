@@ -1,0 +1,95 @@
+/* -*-promela-*- 
+*for emacs promela mode
+* Created 13.11.2012
+* 
+* (C) David Farago <farago@kit.edu>
+* based on A_timing, documentation: http://lfm.iti.kit.edu/files/theses/diploma/daDavidFarago.pdf
+*/ 
+
+#define L 6	          /* size of FIFO-Buffers */
+
+byte nr_passive=0;        /* with this, we can use the guard (nr_leaders+nr_passive == N) at the end as work-around for timeout. This use is slightly weaker, though: 
+                           * we had to examine the code manually that if the START and ACTIVE_SEND_AND_RECEIVE mutual loops are exited, then either nr_leaders or 
+                           * nr_passive is increased. Infinite cycles are checked via NPC detection, but an unexpected, erroneous block within the START and 
+                           * ACTIVE_SEND_AND_RECEIVE mutual loops would go undetected with this work-around. (But we have checked in Spin that this does not occur.)
+                           */
+
+#define __instances_node 6
+#define 			   N 6	           /* number of nodes $n$ */
+
+byte nr_leaders=0;
+typedef Msg {byte hop; bool unique};
+chan q0 = [L] of {byte, bool};
+chan q1 = [L] of {byte, bool};
+chan q2 = [L] of {byte, bool};
+chan q3 = [L] of {byte, bool};
+chan q4 = [L] of {byte, bool};
+chan q5 = [L] of {byte, bool};
+
+proctype node (chan in, out)
+{
+  bool leader=false;
+  Msg curMsg;
+      
+  xr in;
+  xs out;
+
+START:
+  do
+    :: atomic{nempty(in) -> in?curMsg.hop,curMsg.unique; curMsg.hop++}; 
+         goto PASSIVE_SEND_AND_RECEIVE
+    :: else -> progress: if	
+                 :: skip  -> 
+                 :: skip -> curMsg.hop=1; curMsg.unique=true; 
+                      goto ACTIVE_SEND_AND_RECEIVE
+	       fi
+  od;
+
+ACTIVE_SEND_AND_RECEIVE:
+  do
+    :: curMsg.hop==0 ->
+         in?curMsg.hop,curMsg.unique; if
+                      :: curMsg.hop==N && curMsg.unique ->
+	  	           curMsg.hop=0; curMsg.unique=false; 
+                           leader=true; nr_leaders++; 
+                           assert(nr_leaders==1); goto FINISH
+		      :: curMsg.hop==N && !curMsg.unique ->
+                           curMsg.hop=0; goto START
+  		      :: else -> skip
+	 	    fi;
+         curMsg.hop++; curMsg.unique=false
+    :: curMsg.hop>0  -> 
+         out!curMsg.hop,curMsg.unique; curMsg.hop=0; curMsg.unique=false
+  od;
+	    
+PASSIVE_SEND_AND_RECEIVE:
+  nr_passive++;
+  do
+    :: curMsg.hop==0 -> 
+endVALIDSTATE: in?curMsg.hop,curMsg.unique;
+         if
+	   :: curMsg.hop==N -> 
+                printf("Error: pas. node rec. roundtrip-msg"); 
+	   :: else -> skip                  
+         fi;
+         curMsg.hop++
+    :: curMsg.hop>0 -> 
+         out!curMsg.hop,curMsg.unique; curMsg.hop=0; curMsg.unique=false
+  od;
+
+FINISH:skip	    
+}
+
+init {
+  byte lv;
+  atomic {	
+    run node(q0, q1); lv++;
+    run node(q1, q2); lv++;
+    run node(q2, q3); lv++;
+    run node(q3, q4); lv++;
+    run node(q4, q5); lv++;
+    run node(q5, q0); lv++;
+  }
+  (nr_leaders+nr_passive == N) -> assert(nr_leaders==1); 
+  printf("Asserted: nr_leaders==1\n")
+}

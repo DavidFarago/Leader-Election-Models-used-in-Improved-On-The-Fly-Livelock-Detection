@@ -1,0 +1,175 @@
+/* -*-promela-*- 
+*for emacs promela mode
+* Created < 17-Feb-2007 
+* 
+* (C) David Farago <farago@kit.edu>
+* documentation: http://lfm.iti.kit.edu/files/theses/diploma/daDavidFarago.pdf
+*
+* The middle node, nodeWithNPC, makes an artifical NPC 
+* if it would have made the first to jump back to progressSTART.
+* Possible tuning/restriction: 
+* * select a different node to be nodeWithNPC in the init process, 
+* * modify a constant: M now set to 2 (instead of 6) to reduce variance of randomness
+* * make an artificial NPC not only if the random id M-2 has been chosen.
+*/ 
+
+bool someProgressHasBeenMade=false; 
+
+#define N 6	           /* number of nodes $n$ */
+#define K 6               /* number of rounds      */
+#define M 2             /* number of IDs (= 0,..,M-1)  */
+#define L 6	          /* size of FIFO-Buffers      */
+
+byte nr_leaders=0;
+bool limitReached=false;
+typedef Msg {byte round; byte id; byte hop; bool unique;};
+chan q0 = [L] of {byte, byte, byte, bool};
+chan q1 = [L] of {byte, byte, byte, bool};
+chan q2 = [L] of {byte, byte, byte, bool};
+chan q3 = [L] of {byte, byte, byte, bool};
+chan q4 = [L] of {byte, byte, byte, bool};
+chan q5 = [L] of {byte, byte, byte, bool};
+
+#define __instances_node 5
+#define __instances_nodeWithNPC 1
+
+proctype node (chan in, out)
+{
+  bool nodeActive = true, leader = false;
+  byte round, id;
+  Msg curMsg; 
+      
+  xr in;
+  xs out;
+
+progressSTART:  /*random ID */
+  id=0;
+  do
+    :: skip -> break
+    :: id < M-1 -> id++
+  od;
+
+  curMsg.id=id;
+  curMsg.round=round;
+  curMsg.hop=1;
+  curMsg.unique=true;
+
+SEND_AND_RECEIVE:
+  out!curMsg.round,curMsg.id,curMsg.hop,curMsg.unique;      
+
+endRECEIVE: 
+  in?curMsg.round,curMsg.id,curMsg.hop,curMsg.unique;      
+
+/* check message */
+  if
+    :: curMsg.hop<N ->
+       if
+	 :: (curMsg.round > round) || 
+            (curMsg.round == round && curMsg.id > id) -> 
+	      round=curMsg.round; id=curMsg.id; nodeActive=false; 
+              curMsg.hop++; goto SEND_AND_RECEIVE
+	 :: curMsg.round < round || 
+            (curMsg.round == round && curMsg.id < id) -> 
+       	      goto endRECEIVE
+	 :: curMsg.round==round && curMsg.id==id ->                            
+	      curMsg.hop++;curMsg.unique=false; 
+              goto SEND_AND_RECEIVE
+         :: else -> 
+              printf("ERROR: hop<N and message-cases not correct") 
+       fi
+    :: curMsg.hop==N -> 
+       if 
+         :: nodeActive && !curMsg.unique && round<K -> 
+              round++; someProgressHasBeenMade=true; goto progressSTART
+         :: nodeActive && !curMsg.unique && round==K ->
+              limitReached=true;printf("Round-Limit reached")
+         :: nodeActive && curMsg.unique  -> 
+              leader=true; nr_leaders++; assert(nr_leaders==1)
+         :: else -> printf("ERROR: hop=N and !nodeActive")
+       fi
+  fi
+}
+
+
+proctype nodeWithNPC (chan in, out)
+{
+  bool nodeActive = true, leader = false;
+  byte round, id;
+  Msg curMsg; 
+      
+  xr in;
+  xs out;
+
+progressSTART:  /*random ID */
+  id=0;
+  do
+    :: skip -> break
+    :: id < M-1 -> id++
+  od;
+
+  curMsg.id=id;
+  curMsg.round=round;
+  curMsg.hop=1;
+  curMsg.unique=true;
+
+SEND_AND_RECEIVE:
+  out!curMsg.round,curMsg.id,curMsg.hop,curMsg.unique;      
+
+endRECEIVE: 
+  in?curMsg.round,curMsg.id,curMsg.hop,curMsg.unique;      
+
+/* check message */
+  if
+    :: curMsg.hop<N ->
+       if
+	    :: (curMsg.round > round) || (curMsg.round == round && curMsg.id > id) -> 
+	        round=curMsg.round;
+            id=curMsg.id;
+            nodeActive=false; 
+            curMsg.hop++; goto SEND_AND_RECEIVE
+	    :: curMsg.round < round || (curMsg.round == round && curMsg.id < id) -> 
+       	      goto endRECEIVE
+	    :: curMsg.round==round && curMsg.id==id ->                            
+    	      curMsg.hop++;
+              curMsg.unique=false; 
+              goto SEND_AND_RECEIVE
+         :: else -> 
+              printf("ERROR: hop<N and message-cases not correct") 
+       fi
+    :: curMsg.hop==N -> 
+       if 
+         :: nodeActive && !curMsg.unique && round<K -> 
+              round++; 
+              if
+                :: someProgressHasBeenMade!=true && id==M-2 -> 
+                  /* artificial NPC */ 
+                  do
+                    :: skip -> skip
+                  od;
+                  someProgressHasBeenMade=true; goto progressSTART
+                :: else -> someProgressHasBeenMade=true; goto progressSTART
+              fi
+         :: nodeActive && !curMsg.unique && round==K ->
+              limitReached=true;printf("Round-Limit reached")
+         :: nodeActive && curMsg.unique  -> 
+              leader=true; nr_leaders++; assert(nr_leaders==1)
+         :: else -> printf("ERROR: hop=N and !nodeActive")
+       fi
+  fi
+
+}
+
+init {
+  atomic {
+    run node(q0, q1);
+    run node(q1, q2);
+    run node(q2, q3);
+    run nodeWithNPC(q3, q4);
+    run node(q4, q5);
+    run node(q5, q0);
+  }
+
+//  timeout -> assert(nr_leaders==1 || limitReached); 
+  limitReached -> assert(nr_leaders<2);
+  printf("Asserted: when limit of rounds is reached, zero or one leader is elected\n") 
+}
